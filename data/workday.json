@@ -1,0 +1,13 @@
+{
+  "shift_id": "day",
+  "recording_id": "strip-01",
+  "section_id": "day-040-042",
+  "calibration": [0, 1, 1],
+  "capacity": 2,
+  "first_slot": 40,
+  "section_interval": [40, 42],
+  "initial_raw": [8, 11],
+  "advance_raw": [13, 17],
+  "delayed_slot": 41,
+  "recent_slot": 42
+}
