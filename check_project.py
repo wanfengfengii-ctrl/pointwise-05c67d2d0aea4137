@@ -1,9 +1,9 @@
-"""Run this project's full unittest suite from the repository root."""
+"""Run this project's full unittest suite and rescue business checks from the root."""
 import sys
 import unittest
 
 
-def main():
+def run_tests() -> unittest.TestResult:
     suite = unittest.defaultTestLoader.discover('tests', top_level_dir='.')
     if suite.countTestCases():
         result = unittest.TextTestRunner(verbosity=2).run(suite)
@@ -23,6 +23,24 @@ def main():
           f'expected_failures={len(result.expectedFailures)} '
           f'unexpected_successes={len(result.unexpectedSuccesses)} '
           f'result={"PASS" if successful else "FAIL"}')
+    return result
+
+
+def run_checks() -> bool:
+    try:
+        import rescue_checks
+        rescue_checks.run()
+    except BaseException as error:  # noqa: BLE001 - surface any check failure
+        print(f'RESCUE CHECK FAILED: {type(error).__name__}: {error}', file=sys.stderr)
+        return False
+    print('RESCUE SUMMARY result=PASS')
+    return True
+
+
+def main():
+    result = run_tests()
+    checks_ok = run_checks()
+    successful = result.testsRun > 0 and result.wasSuccessful() and checks_ok
     return 0 if successful else 1
 
 

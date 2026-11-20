@@ -20,9 +20,12 @@ class SlotAssessment:
 
 
 def assess_slot(slot: int, evidence: SlotEvidence,
-                availability: SlotAvailability) -> SlotAssessment:
+                availability: SlotAvailability,
+                unresolved: bool = False) -> SlotAssessment:
     if evidence.observation is not None:
         return SlotAssessment(slot, SlotState.VALID, evidence.observation)
+    if unresolved:
+        return SlotAssessment(slot, SlotState.PENDING)
     if availability is SlotAvailability.OVERWRITTEN and not evidence.live_attempts:
         return SlotAssessment(slot, SlotState.MISSING)
     return SlotAssessment(slot, SlotState.PENDING)

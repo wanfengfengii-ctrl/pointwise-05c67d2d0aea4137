@@ -32,13 +32,15 @@ class Worksheet:
 
 
 def build_worksheet(section: Section, evidence_at: Callable[[str, int], SlotEvidence],
-                    availability_at: Callable[[str, int], SlotAvailability]) -> Worksheet:
+                    availability_at: Callable[[str, int], SlotAvailability],
+                    unresolved_at: Callable[[str], frozenset[int]] | None = None) -> Worksheet:
     rows = []
     recording = section.recording
+    unresolved = frozenset() if unresolved_at is None else unresolved_at(recording.recording_id)
     for slot in range(section.first_slot, section.last_slot + 1):
         evidence = evidence_at(recording.recording_id, slot)
         availability = availability_at(recording.recording_id, slot)
-        assessment = assess_slot(slot, evidence, availability)
+        assessment = assess_slot(slot, evidence, availability, slot in unresolved)
         observation = assessment.observation
         if observation is None:
             rows.append(WorksheetRow(assessment.slot, assessment.state))

@@ -21,13 +21,15 @@ class Publisher:
     def __init__(self, db: sqlite3.Connection, sections: SectionRegistry,
                  reports: ReportStore, receipts: ReceiptStore,
                  evidence_at: Callable[[str, int], SlotEvidence],
-                 availability_at: Callable[[str, int], SlotAvailability]):
+                 availability_at: Callable[[str, int], SlotAvailability],
+                 pending_at: Callable[[str], frozenset[int]] | None = None):
         self.db = db
         self.sections = sections
         self.reports = reports
         self.receipts = receipts
         self.evidence_at = evidence_at
         self.availability_at = availability_at
+        self.pending_at = pending_at
 
     def issue(self, section_id: str) -> IssuedReport | PendingIssue:
         with self.db:
@@ -38,7 +40,11 @@ class Publisher:
             existing = self.reports.find_by_section(section_id)
             if existing is not None:
                 return reconcile_report(existing, self.receipts.get(existing.number))
-            worksheet = build_worksheet(section, self.evidence_at, self.availability_at)
+            unresolved = None if self.pending_at is None else self.pending_at(
+                section.recording.recording_id)
+            worksheet = build_worksheet(section, self.evidence_at, self.availability_at,
+                                        None if unresolved is None
+                                        else (lambda _recording: unresolved))
             pending = worksheet.pending_slots
             if pending:
                 return PendingIssue(section_id, pending)

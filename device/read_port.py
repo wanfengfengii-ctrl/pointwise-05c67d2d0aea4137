@@ -32,9 +32,10 @@ class ReadPort:
         self.events = events
         self._request_ids = count(1)
         self._accepted: dict[ReadTicket, SlotSample] = {}
+        self._purposes: dict[ReadTicket, object] = {}
 
-    def request_read(self, connection: Connection, recording_id: str,
-                     slot: int) -> ReadTicket | SlotAvailability:
+    def request_read(self, connection: Connection, recording_id: str, slot: int, *,
+                     purpose: object = None) -> ReadTicket | SlotAvailability:
         if connection.recording_id != recording_id or not self.sessions.is_active(connection):
             raise ValueError('device connection does not authorize this recording')
         sample = self.recorder.sample_at(recording_id, slot)
@@ -42,7 +43,16 @@ class ReadPort:
             return self.recorder.slot_availability(recording_id, slot)
         ticket = ReadTicket(connection, next(self._request_ids), sample.slot, sample.physical_cell)
         self._accepted[ticket] = sample
+        self._purposes[ticket] = purpose
         return ticket
+
+    def accepted_tickets(self, recording_id: str, purpose: object = None) -> tuple[ReadTicket, ...]:
+        """List device-accepted tickets for one recording, in acceptance order."""
+        return tuple(sorted(
+            (ticket for ticket, tag in self._purposes.items()
+             if ticket.recording_id == recording_id and tag == purpose),
+            key=lambda ticket: (ticket.connection.generation, ticket.request_id),
+        ))
 
     def deliver_result(self, ticket: ReadTicket, *, succeeded: bool = True,
                        delay: int = 0) -> int:

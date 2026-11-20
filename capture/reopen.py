@@ -74,6 +74,9 @@ class CaptureSessions:
         return (self.device is not None and self.device.is_active(connection)
                 and self._state(connection) == 'active')
 
+    def is_ended(self, connection: Connection) -> bool:
+        return self._state(connection) == 'ended'
+
     def _state(self, connection: Connection) -> str | None:
         row = self.db.execute('''
             SELECT state FROM capture_connections WHERE generation = ? AND recording_id = ?

@@ -9,9 +9,33 @@
 ```sh
 python3 -B check_project.py
 python3 -B station.py demo data/workday.json
+python3 -B station.py demo
+python3 -B rescue_fixture.py
 ```
 
 样例使用独立临时站库，关闭来源后重新打开站库，并显示签出及复领的实际结果。
+`station.py demo`（不带样例文件）演示定额抢救：重叠班段的重选、逐步发读、成报与
+停源重开后的原报复领。带样例文件时在同一份输出里附带 `rescue` 结果。`check_project.py`
+运行全部原回归并核验抢救重选、原票续办与签报交接，业务断言失败时返回非零。
+
+## 定额抢救
+
+记录器持续覆写时，按一次工单的回读额度尽量补齐未签班段。详细语义见 `RESCUE.md`。
+
+- `register_rescue(job_id, recording_id, weights, budget)` 登记工单。`weights` 为
+  班段号到正整数权重的字典，`budget` 为非负整数（布尔值不算整数）。每个录制只有
+  一个工单；同参重投返回原工单当前状态，异参、错绑和非法输入抛 `ValueError`，
+  未知工单、录制或班段抛 `KeyError`。
+- `advance_rescue(job_id, connection)` 推进一次：按已接纳原样和当前设备可读槽重算，
+  在剩余额度内选总权重最大的可补齐班段集合，每步最多发一笔读，前笔未结不发。
+- `rescue_status(job_id)` 查询，不发起回读。三个入口返回同一字典：`used`、
+  `remaining`、`pending`（未结原 `ReadTicket` 或 `None`）、`targets`、
+  `completed`（均为 `set[str]`）。
+
+设备实际受理才扣一次额度；明确失败不退，未受理不扣，普通读不扣。设备已受理而站库
+写入或提交失败时，重开站库并接回同一在线设备与连接后先认回原票及占额，即使原槽已
+覆写。连接终止作废旧票但保留已扣额度。覆盖未决槽的班段在无实收时保持待结，`issue`
+仍返回原 `PendingIssue`；结清后按原规则签发，停源后仍可用 `retrieve` 按成果号复领。
 
 ## 业务接口
 

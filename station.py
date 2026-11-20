@@ -24,6 +24,8 @@ from device.session import Connection, SessionManager
 from shift.config import ShiftConfig
 from shift.registry import Recording, ShiftRegistry
 from shift.sections import Section, SectionRegistry
+from rescue.jobs import RescueStore
+from rescue.service import RescueService
 
 
 class LocalDevice:
@@ -55,17 +57,23 @@ class Station:
         self.observations = ObservationStore(db)
         self.reports = ReportStore(db)
         self.receipts = ReceiptStore(db)
+        self.rescue_store = RescueStore(db, self.shifts)
         with db:
             db.execute('BEGIN IMMEDIATE')
             for owner in (self.shifts, self.sections, self.sessions, self.attempts,
                           self.observations, self.reports, self.receipts):
                 owner.initialize()
+            self.rescue_store.initialize()
         evidence_at = partial(read_slot_evidence, observations=self.observations,
                               ledger=self.attempts, sessions=self.sessions)
         self.capture = CaptureAdmission(db, None if self.device is None else self.device.port,
                                         self.sessions, self.attempts, self.observations)
+        self.rescue = RescueService(db, self.device, self.sessions, self.attempts,
+                                    self.observations, self.reports, self.sections,
+                                    self.shifts, self.rescue_store)
         self.publisher = Publisher(db, self.sections, self.reports, self.receipts,
-                                   evidence_at, self._availability)
+                                   evidence_at, self._availability,
+                                   pending_at=self._rescue_pending)
         self.archive = Archive(self.reports, self.receipts)
 
     def _device(self) -> LocalDevice:
@@ -77,6 +85,9 @@ class Station:
         if self.device is None:
             return SlotAvailability.UNKNOWN
         return self.device.recorder.slot_availability(recording_id, slot)
+
+    def _rescue_pending(self, recording_id: str) -> frozenset[int]:
+        return self.rescue.unresolved_slots(recording_id)
 
     def __enter__(self) -> 'Station':
         return self
@@ -114,6 +125,7 @@ class Station:
 
     def terminate(self, connection: Connection) -> None:
         self.sessions.terminate(connection)
+        self.rescue.note_termination(connection)
 
     def reopen(self, connection: Connection) -> Connection:
         return self.sessions.reopen(connection)
@@ -126,11 +138,14 @@ class Station:
         return self._device().port.deliver_result(ticket, succeeded=succeeded, delay=delay)
 
     def prepare_reply(self, result: ReadResult) -> PreparedRead | Completion:
+        self.rescue.reconcile_recording(result.ticket.recording_id)
         return self.capture.prepare_read(result)
 
     def complete_reply(self, reply: ReadResult | PreparedRead, *,
                        acknowledge: Callable[[Completion], object] | None = None) -> Completion:
         events = self._device().events if acknowledge is not None else None
+        ticket = reply.result.ticket if isinstance(reply, PreparedRead) else reply.ticket
+        self.rescue.reconcile_recording(ticket.recording_id)
         result = self.capture.complete_read(reply)
         if events is not None:
             events.schedule(partial(acknowledge, result))
@@ -141,6 +156,16 @@ class Station:
 
     def issue(self, section_id: str) -> IssuedReport | PendingIssue:
         return self.publisher.issue(section_id)
+
+    def rescue_status(self, job_id: str) -> dict:
+        return self.rescue.status(job_id)
+
+    def register_rescue(self, job_id: str, recording_id: str, weights,
+                        budget) -> dict:
+        return self.rescue.register(job_id, recording_id, weights, budget)
+
+    def advance_rescue(self, job_id: str, connection) -> dict:
+        return self.rescue.advance(job_id, connection)
 
     def retrieve(self, number: str) -> IssuedReport | None:
         return self.archive.retrieve(number)
@@ -211,15 +236,68 @@ def run_workday(sample: dict) -> dict:
                     'retrieved': _describe_report(retrieved)}
 
 
+def run_rescue_demo() -> dict:
+    """Demonstrate a rescue job: overlap selection, issued reports, offline retrieval."""
+    device = LocalDevice(3, 40)
+    recording_id = 'rescue-strip'
+    sections = {'A': (40, 41), 'B': (41, 42), 'C': (42, 42)}
+    with TemporaryDirectory(prefix='vibration-rescue-') as directory:
+        path = Path(directory) / 'station.sqlite3'
+        with Station(path, device) as station:
+            station.open_shift('rescue-day', recording_id, 0, 1, 1)
+            for name, interval in sections.items():
+                station.define_section(name, 'rescue-day', *interval)
+            for raw in (8, 11, 13):
+                station.record(recording_id, raw)
+            connection = station.start(recording_id)
+            station.register_rescue('rescue-job', recording_id,
+                                    {name: 1 for name in sections}, 2)
+            reads = []
+            while True:
+                state = station.advance_rescue('rescue-job', connection)
+                ticket = state['pending']
+                if ticket is None:
+                    break
+                reads.append(ticket.slot)
+                station.queue_reply(ticket)
+                result = device.events.run_next()
+                if not isinstance(result, ReadResult):
+                    raise RuntimeError('rescue demo expected a device reply')
+                if station.complete_reply(result) is not Completion.ACCEPTED:
+                    raise RuntimeError('rescue demo did not persist a device reply')
+            final = station.rescue_status('rescue-job')
+            issued = {}
+            for name in sorted(final['completed']):
+                report = station.issue(name)
+                if not isinstance(report, IssuedReport):
+                    raise RuntimeError('rescue demo expected issued sections')
+                issued[name] = _describe_report(report)
+            station.terminate(connection)
+            station.end_recording(recording_id)
+        with Station(path) as station:
+            retrieved = {name: _describe_report(station.retrieve(report['number']))
+                         for name, report in issued.items()}
+        return {'read_slots': reads,
+                'used': final['used'], 'remaining': final['remaining'],
+                'completed': sorted(final['completed']),
+                'targets': sorted(final['targets']),
+                'issued': issued, 'retrieved': retrieved}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Run a local vibration station workday')
     subcommands = parser.add_subparsers(dest='command', required=True)
     demo = subcommands.add_parser('demo', help='run a workday against a temporary station')
-    demo.add_argument('sample', type=Path)
+    demo.add_argument('sample', type=Path, nargs='?')
     args = parser.parse_args()
+    if args.sample is None:
+        print(json.dumps(run_rescue_demo(), ensure_ascii=False, sort_keys=True))
+        return
     with args.sample.open(encoding='utf-8') as stream:
         sample = json.load(stream)
-    print(json.dumps(run_workday(sample), ensure_ascii=False, sort_keys=True))
+    result = run_workday(sample)
+    result['rescue'] = run_rescue_demo()
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == '__main__':
